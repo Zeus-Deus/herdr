@@ -233,6 +233,45 @@ description = "apply layout"
 
 在 Windows 上，自定义命令字符串使用 `cmd.exe /d /c`，因此环境变量应采用 `%HERDR_BIN_PATH%` 语法。若要运行 PowerShell 语法，请显式调用它，例如 `powershell.exe -NoProfile -Command "..."`。
 
+## 客户端本地命令按键绑定
+
+在查看端客户端自己的 `config.toml` 中显式配置本地辅助程序；即使选中了 SSH 端点，
+它也在客户端运行。这与服务器拥有的 `[[keys.command]]` 分开，既不是插件，也不是新的 `type`。
+
+```toml
+[[keys.client_command]]
+key = ["prefix+y", "ctrl+alt+p"]
+command = ["python3", "/path/to/helper.py", "client-pick"]
+description = "open local preview"
+```
+
+`command` 是非空 argv 数组。Herdr 在客户端直接启动可执行程序，不经过 shell，
+不做展开或插值。带空格的参数和路径仍是单个参数。`key` 可以是一个快捷键或数组，
+遵循通常的冲突规则；`description` 可选，用于客户端帮助面板。
+工作目录继承自客户端，而不是远程窗格。标准输入、输出和错误与 TUI 分离。
+已退出的子进程会被回收；仅仅因为预览仍打开，不会终止正在运行的辅助程序。
+
+Herdr 会删除继承的 `HERDR_*` 变量，只提供可信的本地 `HERDR_BIN_PATH` 和
+`HERDR_CLIENT_CONTEXT_JSON`。后者是 JSON 对象：
+
+- `version`：`1`。
+- `endpoint_id`：已确认的活动端点存储键（`local` 或 `ssh:<profile-id>`）。
+- `machine_id`：保存的 SSH 配置 ID（适用时）。
+- `ssh_target`：保存或直接 SSH 连接在本地配置的目标。
+- `session`：显式目标会话，包括 `default`。
+- `server_socket`：本地端点准确配置的 API socket；SSH 连接省略。
+- `workspace_id`、`tab_id`、`pane_id`：从该端点快照获取的焦点（存在时）。
+- `selection`：可见选区的准确 `PaneSelectionReadParams` 对象，包含 `pane_id`、
+  `anchor: {row, col}`、`cursor: {row, col}` 和 `content_revision`，可原样传给
+  `pane.selection.read`。它是坐标而非选中文本。
+
+上下文值必须当作数据，不能作为 shell 源码。不可用的端点、过期或属于其他端点的
+快照和选区、启动前变化的目标都会被拒绝并显示通知。启动失败不会断开端点。
+
+只有本地配置能够授权执行。即使使用 `--remote-keybindings server`，服务器按键配置
+也不能提供客户端命令。服务器既不公布也不执行这些命令。已有的 0.9.1 服务器无需
+协议更新，会忽略新的可选配置表（可能提示未知键）。修改后请重新加载客户端配置。
+
 ## 主题
 
 选择内置主题：

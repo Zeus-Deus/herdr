@@ -549,7 +549,49 @@ impl ClientShellState {
             outcome.repaint = true;
             return None;
         }
-        if self.mode != ClientShellMode::Copy
+        // A native command needs the displayed selection, including across its
+        // prefix entry. All other input keeps the existing selection-clear path.
+        let preserve_for_client_command = self.selection.is_some()
+            && match self.mode {
+                ClientShellMode::Terminal => {
+                    match crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
+                    {
+                        Some(crate::input::KeybindMatch::ClientCommand(_)) => true,
+                        None => {
+                            crate::config::terminal_key_matches_combo(
+                                key,
+                                self.config.keybinds.prefix,
+                            ) && self.config.keybinds.keybinds.client_commands.iter().any(
+                                |command| {
+                                    command
+                                        .bindings
+                                        .bindings
+                                        .iter()
+                                        .any(|binding| binding.trigger.is_prefix())
+                                },
+                            )
+                        }
+                        _ => false,
+                    }
+                }
+                ClientShellMode::Prefix => {
+                    key.code != KeyCode::Esc
+                        && !crate::config::terminal_key_matches_combo(
+                            key,
+                            self.config.keybinds.prefix,
+                        )
+                        && matches!(
+                            crate::input::resolve_prefix_binding(
+                                &self.config.keybinds.keybinds,
+                                key
+                            ),
+                            Some(crate::input::KeybindMatch::ClientCommand(_))
+                        )
+                }
+                _ => false,
+            };
+        if !preserve_for_client_command
+            && self.mode != ClientShellMode::Copy
             && self.copy_or_terminal_mode() != ClientShellMode::Copy
             && self.selection.take().is_some()
         {
@@ -796,6 +838,14 @@ impl ClientShellState {
             )
         })
         .map(KeybindMatch::Action)
+        .or_else(|| {
+            crate::input::resolve_client_command(
+                &self.config.keybinds.keybinds,
+                key,
+                KeybindDispatch::Prefix,
+            )
+            .map(KeybindMatch::ClientCommand)
+        })
         .or_else(|| {
             crate::input::resolve_custom_command(
                 &self.config.keybinds.keybinds,

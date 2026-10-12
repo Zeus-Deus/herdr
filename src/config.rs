@@ -18,8 +18,8 @@ pub use self::{
     },
     keybinds::{
         format_key_combo, normalize_key_combo, terminal_key_matches_combo, ActionKeybinds,
-        BindingConfig, CommandKeybindConfig, CustomCommandAction, CustomCommandKeybind,
-        IndexedKeybind, Keybinds, LiveKeybindConfig,
+        BindingConfig, ClientCommandKeybind, ClientCommandKeybindConfig, CommandKeybindConfig,
+        CustomCommandAction, CustomCommandKeybind, IndexedKeybind, Keybinds, LiveKeybindConfig,
     },
     model::{
         validated_sidebar_bounds, AgentPanelSortConfig, Config, ConfigReloadReport,
@@ -187,9 +187,15 @@ impl Config {
     }
 }
 
-pub(crate) fn keybindings_from_profile_toml(profile: &str) -> Result<LiveKeybindConfig, String> {
-    let config = toml::from_str::<Config>(profile)
+pub(crate) fn keybindings_from_profile_toml(
+    profile: &str,
+    local_commands: &[ClientCommandKeybindConfig],
+) -> Result<LiveKeybindConfig, String> {
+    let mut config = toml::from_str::<Config>(profile)
         .map_err(|err| format!("invalid keybinding profile: {err}"))?;
+    // Profiles are endpoint-controlled. Neither embedded command table is executable locally.
+    config.keys.command.clear();
+    config.keys.client_command = local_commands.to_vec();
     config
         .live_keybinds_with_diagnostics()
         .map(|(keybinds, _diagnostics)| keybinds)
@@ -236,7 +242,7 @@ prefix = "ctrl+"
         .unwrap();
 
         let profile = config.local_keybindings_profile_toml().unwrap();
-        let keybinds = keybindings_from_profile_toml(&profile).unwrap();
+        let keybinds = keybindings_from_profile_toml(&profile, &[]).unwrap();
 
         assert!(profile.contains("prefix = \"ctrl+b\""));
         assert_eq!(keybinds.prefix, config.prefix_key());

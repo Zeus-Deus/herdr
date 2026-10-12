@@ -39,6 +39,11 @@ pub(crate) enum ClientEndpointFocusTarget {
 
 impl ClientShellState {
     pub(crate) fn set_endpoint_catalog(&mut self, profiles: &[SavedSshEndpoint]) {
+        self.client_command_profiles = profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .map(|profile| (ClientEndpointId::Ssh(profile.id.clone()), profile.clone()))
+            .collect();
         let mut next = Vec::with_capacity(profiles.len().saturating_add(1));
         let local = self
             .endpoints

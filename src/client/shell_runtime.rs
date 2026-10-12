@@ -12,6 +12,34 @@ pub(super) fn dispatch_client_shell_actions(
     let mut repaint = false;
     for action in actions {
         match action {
+            shell::ClientShellAction::ClientCommand(invocation) => {
+                let available =
+                    endpoints.active_id() == &invocation.endpoint_id
+                        && endpoints.active_surface_available()
+                        && endpoints.connection(&invocation.endpoint_id).is_some_and(
+                            |connection| invocation.generation == Some(connection.generation),
+                        )
+                        && shell
+                            .as_deref()
+                            .is_some_and(|shell| shell.client_command_is_current(&invocation));
+                if !available {
+                    if let Some(shell) = shell.as_deref_mut() {
+                        repaint |= shell.receive_endpoint_unavailable("Client command target changed or is unavailable; retry when the endpoint is ready".into());
+                    }
+                    continue;
+                }
+                match shell::spawn_client_command(&invocation) {
+                    Ok(child) => detached_process_children.push(child),
+                    Err(error) => {
+                        warn!(%error, "failed to launch client command");
+                        if let Some(shell) = shell.as_deref_mut() {
+                            repaint |= shell.receive_endpoint_unavailable(format!(
+                                "Client command failed to start: {error}"
+                            ));
+                        }
+                    }
+                }
+            }
             shell::ClientShellAction::Endpoint {
                 endpoint_id,
                 boot_id,

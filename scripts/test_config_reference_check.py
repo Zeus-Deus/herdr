@@ -120,6 +120,13 @@ class CollectKeysTests(unittest.TestCase):
         self.assertNotIn("keys.command", keys)
         self.assertNotIn("keys.command.key", keys)
 
+    def test_client_command_is_an_explicit_prose_documented_subtree(self) -> None:
+        model = sample_model()
+        model.structs["KeysConfig"].append(StructField(name="client_command", rust_type="Vec<CommandKeybindConfig>", doc="Trusted client argv"))
+        keys = collect_keys(model)
+        self.assertNotIn("keys.client_command", keys)
+        self.assertNotIn("keys.client_command.key", keys)
+
     def test_unlisted_vec_of_struct_subtree_is_an_error(self) -> None:
         model = sample_model()
         parse_file(

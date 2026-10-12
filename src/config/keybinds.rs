@@ -116,6 +116,15 @@ impl Default for CommandKeybindConfig {
     }
 }
 
+/// Trusted viewing-client argv. This config-only type is never part of a wire codec.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ClientCommandKeybindConfig {
+    pub key: BindingConfig,
+    pub command: Vec<String>,
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CustomCommandAction {
     Shell,
@@ -169,6 +178,19 @@ pub struct ActionKeybinds {
 }
 
 impl ActionKeybinds {
+    pub(crate) fn from_local_config(config: &BindingConfig) -> Self {
+        Self {
+            bindings: config
+                .values()
+                .into_iter()
+                .filter_map(|raw| match parse_binding_string(raw.trim()) {
+                    Some(ParsedBinding::Single(binding)) => Some(binding),
+                    Some(ParsedBinding::Range(_)) | None => None,
+                })
+                .collect(),
+        }
+    }
+
     pub(crate) fn from_labels(labels: &[String]) -> Result<Self, String> {
         let mut bindings = Vec::new();
         for label in labels {
@@ -303,6 +325,15 @@ pub struct CustomCommandKeybind {
     pub height: Option<PopupSize>,
 }
 
+/// Process-local binding, deliberately separate from endpoint custom commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCommandKeybind {
+    pub bindings: ActionKeybinds,
+    pub label: String,
+    pub command: Vec<String>,
+    pub description: Option<String>,
+}
+
 /// Parsed keybinds for Herdr actions.
 #[derive(Debug, Clone)]
 pub struct NavigateKeybinds {
@@ -370,6 +401,7 @@ pub struct Keybinds {
     pub resize_pane_right: ActionKeybinds,
     pub toggle_sidebar: ActionKeybinds,
     pub custom_commands: Vec<CustomCommandKeybind>,
+    pub client_commands: Vec<ClientCommandKeybind>,
 }
 
 impl Default for Keybinds {
@@ -538,6 +570,7 @@ impl Config {
             resize_pane_right: empty_action!(),
             toggle_sidebar: empty_action!(),
             custom_commands: Vec::new(),
+            client_commands: Vec::new(),
         };
 
         macro_rules! field_source {
@@ -713,6 +746,12 @@ impl Config {
             }
 
             if source == BindingSource::User {
+                append_client_command_bindings(
+                    self,
+                    &mut keybinds,
+                    &mut registry,
+                    &mut diagnostics,
+                );
                 append_custom_command_bindings(
                     self,
                     &mut keybinds,
@@ -745,6 +784,45 @@ fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
             "navigate reserved keys",
             BindingSource::Default,
         );
+    }
+}
+
+fn append_client_command_bindings(
+    config: &Config,
+    keybinds: &mut Keybinds,
+    registry: &mut BindingRegistry,
+    diagnostics: &mut Vec<String>,
+) {
+    for (index, command) in config.keys.client_command.iter().enumerate() {
+        if command
+            .command
+            .first()
+            .is_none_or(|program| program.trim().is_empty())
+            || command.command.iter().any(|arg| arg.contains('\0'))
+        {
+            let diag = format!(
+                "invalid argv: keys.client_command[{index}].command; disabling client command"
+            );
+            warn!(message = %diag, "config diagnostic");
+            diagnostics.push(diag);
+            continue;
+        }
+        let bindings = parse_action_bindings(
+            &format!("keys.client_command[{index}].key"),
+            &command.key,
+            registry,
+            diagnostics,
+            BindingSource::User,
+        );
+        if bindings.bindings.is_empty() {
+            continue;
+        }
+        keybinds.client_commands.push(ClientCommandKeybind {
+            label: bindings.label().unwrap_or_default(),
+            bindings,
+            command: command.command.clone(),
+            description: command.description.clone(),
+        });
     }
 }
 
@@ -1497,6 +1575,42 @@ mod tests {
             .iter()
             .map(|binding| binding.trigger)
             .collect()
+    }
+
+    #[test]
+    fn local_binding_authorization_matches_independent_config_entries() {
+        for key in [
+            BindingConfig::one(" prefix+y "),
+            BindingConfig::Many(vec![
+                "prefix+y".into(),
+                "".into(),
+                "not-a-valid-key".into(),
+                "prefix+1-9".into(),
+            ]),
+            BindingConfig::Many(vec![
+                "".into(),
+                "   ".into(),
+                "not-a-valid-key".into(),
+                "prefix+1-9".into(),
+            ]),
+        ] {
+            let effective = parse_action_bindings(
+                "keys.client_command[0].key",
+                &key,
+                &mut BindingRegistry::new(
+                    (KeyCode::Char('b'), KeyModifiers::CONTROL),
+                    BindingSource::Default,
+                ),
+                &mut Vec::new(),
+                BindingSource::User,
+            );
+            assert_eq!(ActionKeybinds::from_local_config(&key), effective);
+        }
+        // Endpoint labels remain a strict, separate wire-import contract.
+        assert!(ActionKeybinds::from_labels(&["prefix+y".into(), "".into()]).is_err());
+        assert!(
+            ActionKeybinds::from_labels(&["prefix+y".into(), "not-a-valid-key".into()]).is_err()
+        );
     }
 
     #[test]
@@ -2256,6 +2370,102 @@ description = "say hello"
             keybinds.custom_commands[0].description,
             Some("say hello".to_string())
         );
+    }
+
+    #[test]
+    fn client_command_config_is_opt_in_and_never_an_endpoint_command() {
+        let parsed = toml::from_str::<Config>(
+            r#"
+[[keys.client_command]]
+key = "prefix+y"
+command = ["python3", "trusted-local-helper", "client-pick"]
+"#,
+        );
+        assert!(
+            parsed.is_ok(),
+            "client_command must be a local config table: {parsed:?}"
+        );
+        let config = parsed.unwrap();
+        assert!(
+            toml::to_string(&config.keys)
+                .unwrap()
+                .contains("trusted-local-helper"),
+            "local argv must be retained, not ignored"
+        );
+        assert!(
+            config.keybinds().custom_commands.is_empty(),
+            "client-only commands must not enter the endpoint registry"
+        );
+    }
+
+    #[test]
+    fn client_command_resolves_both_prefix_and_direct_without_shell_parsing() {
+        let config: Config = toml::from_str(
+            r#"
+[[keys.client_command]]
+key = ["prefix+y", "ctrl+alt+p"]
+command = ["python3", "file with spaces.py", "$(not-a-shell)"]
+"#,
+        )
+        .unwrap();
+        let kb = config.keybinds();
+        for (key, resolve) in [
+            (
+                crate::input::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
+                crate::input::resolve_prefix_binding
+                    as fn(
+                        &Keybinds,
+                        &crate::input::TerminalKey,
+                    ) -> Option<crate::input::KeybindMatch>,
+            ),
+            (
+                crate::input::TerminalKey::new(
+                    KeyCode::Char('p'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ),
+                crate::input::resolve_direct_binding,
+            ),
+        ] {
+            let binding = resolve(&kb, &key);
+            assert!(
+                format!("{binding:?}").contains("ClientCommand"),
+                "local binding was not resolved: {binding:?}"
+            );
+            assert!(format!("{binding:?}").contains("$(not-a-shell)"));
+        }
+        assert!(!config
+            .local_keybindings_profile_toml()
+            .unwrap()
+            .contains("file with spaces"));
+    }
+
+    #[test]
+    fn client_command_rejects_invalid_argv_before_reserving_a_binding() {
+        for argv in [
+            vec![],
+            vec!["".into()],
+            vec!["  ".into()],
+            vec!["python3".into(), "bad\0argument".into()],
+        ] {
+            let mut config = Config::default();
+            config.keys.client_command.push(ClientCommandKeybindConfig {
+                key: BindingConfig::one("prefix+n"),
+                command: argv,
+                description: None,
+            });
+            let (live, diagnostics) = config.live_keybinds_with_diagnostics().unwrap();
+            assert!(
+                live.keybinds.client_commands.is_empty(),
+                "invalid argv must be disabled"
+            );
+            assert!(diagnostics
+                .iter()
+                .any(|d| d.contains("invalid argv") && d.contains("keys.client_command[0]")));
+            assert!(
+                !live.keybinds.next_tab.bindings.is_empty(),
+                "disabled local command must not reserve the default shortcut"
+            );
+        }
     }
 
     #[test]

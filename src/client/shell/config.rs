@@ -143,6 +143,9 @@ impl ClientShellConfig {
                     keybinds: config.keybinds(),
                 }),
             local_keys: config.keys.clone(),
+            client_command_local_route: super::client_commands::local_route_context(
+                &crate::server::socket_paths::client_socket_path(),
+            ),
             keybinding_source: ClientShellKeybindingSource::Local,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
@@ -190,7 +193,8 @@ impl ClientShellConfig {
         }
     }
 
-    pub(crate) fn with_local_endpoint(self, socket_path: &std::path::Path) -> Self {
+    pub(crate) fn with_local_endpoint(mut self, socket_path: &std::path::Path) -> Self {
+        self.client_command_local_route = super::client_commands::local_route_context(socket_path);
         self.with_preferences_path(preferences::path_for_local_endpoint(socket_path))
     }
 
@@ -198,6 +202,22 @@ impl ClientShellConfig {
         self.preferences = preferences::load(&path).unwrap_or_default();
         self.preferences_path = Some(path);
         self
+    }
+
+    pub(super) fn client_command_is_authorized(
+        &self,
+        binding: &crate::config::ClientCommandKeybind,
+    ) -> bool {
+        self.local_keys.client_command.iter().any(|trusted| {
+            let authorized = crate::config::ActionKeybinds::from_local_config(&trusted.key);
+            trusted.command == binding.command
+                && !binding.bindings.bindings.is_empty()
+                && binding
+                    .bindings
+                    .bindings
+                    .iter()
+                    .all(|resolved| authorized.bindings.contains(resolved))
+        })
     }
 
     pub(super) fn apply_snapshot_keybindings(
@@ -208,6 +228,7 @@ impl ClientShellConfig {
         let mut keybinds = match self.keybinding_source {
             ClientShellKeybindingSource::Endpoint => crate::config::keybindings_from_profile_toml(
                 profile.ok_or("endpoint did not publish its keybindings")?,
+                &self.local_keys.client_command,
             )?,
             ClientShellKeybindingSource::RemoteLocal => return Ok(()),
             ClientShellKeybindingSource::Local => {
@@ -290,6 +311,19 @@ impl ClientShellConfig {
         let invalid_section =
             |section: &str| invalid_sections.iter().any(|invalid| invalid == section);
 
+        if !invalid_section("keys")
+            && self.keybinding_source == ClientShellKeybindingSource::Endpoint
+        {
+            // Server keymaps own navigation, never the locally trusted executable table.
+            self.local_keys.client_command = config.keys.client_command.clone();
+            // Revoke independently of the next endpoint profile parse. Navigation can
+            // retain its last good map, but that map cannot retain executable authority.
+            let current = std::mem::take(&mut self.keybinds.keybinds.client_commands);
+            self.keybinds.keybinds.client_commands = current
+                .into_iter()
+                .filter(|binding| self.client_command_is_authorized(binding))
+                .collect();
+        }
         if !invalid_section("keys")
             && self.keybinding_source != ClientShellKeybindingSource::Endpoint
         {

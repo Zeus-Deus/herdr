@@ -169,6 +169,9 @@ impl ClientShellState {
                 }
                 outcome.actions.push(ClientShellAction::Keybind(action));
             }
+            crate::input::KeybindMatch::ClientCommand(binding) => {
+                self.record_client_command(binding, outcome);
+            }
             crate::input::KeybindMatch::Command(command) => {
                 let action = command.action.into();
                 let resolved_labels = command.bindings.labels();

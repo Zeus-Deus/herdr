@@ -233,6 +233,49 @@ description = "apply layout"
 
 Windows では、カスタムコマンド文字列に `cmd.exe /d /c` が使われるため、環境変数には `%HERDR_BIN_PATH%` 構文を使います。PowerShell 構文を実行するには、たとえば `powershell.exe -NoProfile -Command "..."` のように明示的に呼び出してください。
 
+## クライアントローカルのコマンドキーバインド
+
+表示側クライアント自身の `config.toml` でローカルヘルパーを明示的に設定できます。
+SSH エンドポイントを選択中でもクライアント上で動作します。サーバー所有の
+`[[keys.command]]` とは別で、プラグインや新しい `type` ではありません。
+
+```toml
+[[keys.client_command]]
+key = ["prefix+y", "ctrl+alt+p"]
+command = ["python3", "/path/to/helper.py", "client-pick"]
+description = "open local preview"
+```
+
+`command` は空でない argv 配列です。シェル、展開、補間を使わず、クライアント上で
+実行ファイルを直接起動します。空白を含むパスや引数も単一の引数のままです。
+`key` は通常の競合ルールに従うショートカットまたは配列、`description` は任意の
+クライアントヘルプ表示名です。作業ディレクトリはリモートペインではなくクライアントのものです。
+標準入出力と標準エラーは TUI から切り離されます。終了した子プロセスは回収され、
+プレビューが開いているだけで実行中のヘルパーを終了させることはありません。
+
+継承した `HERDR_*` 変数は削除し、信頼できるローカル `HERDR_BIN_PATH` と
+`HERDR_CLIENT_CONTEXT_JSON` だけを渡します。後者は次の JSON オブジェクトです。
+
+- `version`: `1`。
+- `endpoint_id`: 確定したアクティブエンドポイントの保存キー (`local` または `ssh:<profile-id>`)。
+- `machine_id`: 保存済み SSH プロファイル ID（該当する場合）。
+- `ssh_target`: 保存済みまたは直接 SSH 接続のローカル設定ターゲット。
+- `session`: `default` を含む明示的な対象セッション。
+- `server_socket`: ローカルエンドポイントの正確な設定済み API ソケット。SSH では省略。
+- `workspace_id`, `tab_id`, `pane_id`: スナップショットから取得したフォーカス（存在する場合）。
+- `selection`: 可視選択の正確な `PaneSelectionReadParams`。
+  `pane_id`, `anchor: {row, col}`, `cursor: {row, col}`, `content_revision` を含み、
+  `pane.selection.read` にそのまま渡せます。選択テキストではなく座標です。
+
+コンテキスト値はシェルソースではなくデータとして扱ってください。利用不能なエンドポイント、
+古い／別のスナップショットや選択、起動前に変わった対象は通知付きで拒否されます。
+起動失敗でエンドポイントが切断されることはありません。
+
+ローカル設定だけが実行を許可できます。`--remote-keybindings server` 使用時も
+サーバープロファイルからクライアントコマンドを取り込むことはありません。
+サーバーはこのコマンドを公開・実行しません。既存の 0.9.1 サーバーにプロトコル更新は不要で、
+新しい任意テーブルを無視します（未知キーの警告が出る場合があります）。編集後はクライアント設定を再読み込みしてください。
+
 ## テーマ
 
 組み込みテーマを選びます:

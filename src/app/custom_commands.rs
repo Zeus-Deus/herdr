@@ -598,6 +598,50 @@ mod tests {
     }
 
     #[test]
+    fn client_command_is_never_advertised_or_invocable_by_the_server() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.client_command]]
+key = "prefix+y"
+command = ["trusted-local-helper", "client-pick"]
+"#,
+        )
+        .unwrap();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            rx,
+            crate::api::EventHub::default(),
+        );
+        assert!(app.client_shell_command_manifest().is_empty());
+        assert!(!app
+            .client_shell_keybindings_profile()
+            .unwrap()
+            .contains("trusted-local-helper"));
+        for command_id in [
+            "trusted-local-helper",
+            "client_command:0",
+            "keys.client_command[0]",
+        ] {
+            let response = app.handle_command_invoke(
+                "request".into(),
+                crate::api::schema::CommandInvokeParams {
+                    command_id: command_id.into(),
+                    workspace_id: None,
+                    tab_id: None,
+                    pane_id: None,
+                    selection: None,
+                },
+            );
+            let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+            assert_eq!(error.error.code, "command_not_found");
+        }
+        assert!(app.detached_process_children.is_empty());
+    }
+
+    #[test]
     fn manifest_exposes_opaque_ids_without_command_text() {
         let mut app = test_app();
         install(&mut app, binding(crate::config::CustomCommandAction::Shell));

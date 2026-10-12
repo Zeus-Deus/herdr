@@ -237,6 +237,51 @@ Custom commands receive `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ACTIVE_WOR
 
 On Windows, custom command strings use `cmd.exe /d /c`, so environment variables use `%HERDR_BIN_PATH%` syntax. To run PowerShell syntax, invoke it explicitly, for example `powershell.exe -NoProfile -Command "..."`.
 
+## Client-local command keybindings
+
+Use the viewing client's own `config.toml` to opt into a local helper, including
+while an SSH endpoint is selected. This is separate from server-owned
+`[[keys.command]]`; it is not a plugin or a new command `type`.
+
+```toml
+[[keys.client_command]]
+key = ["prefix+y", "ctrl+alt+p"]
+command = ["python3", "/path/to/helper.py", "client-pick"]
+description = "open local preview"
+```
+
+`command` is a nonempty argv array. Herdr starts the executable directly on the
+client, without a shell, expansion or interpolation. Arguments and paths with
+spaces remain single arguments. `key` accepts one shortcut or a list, using the
+usual collision rules; `description` is optional and appears in client help.
+The helper inherits the client's working directory, not a remote pane's path.
+Standard input, output and error are detached from the TUI. Exited children are
+reaped; a running helper is not killed just because its preview remains open.
+
+Herdr removes inherited `HERDR_*` variables and supplies only the trusted local
+`HERDR_BIN_PATH` and `HERDR_CLIENT_CONTEXT_JSON`. The latter is a JSON object:
+
+- `version`: `1`.
+- `endpoint_id`: the committed active endpoint's storage key (`local` or `ssh:<profile-id>`).
+- `machine_id`: the saved SSH profile ID, when applicable.
+- `ssh_target`: the local connection's SSH target, for saved or direct SSH.
+- `session`: the explicit target session, including `default`.
+- `server_socket`: the exact configured API socket for a local endpoint; omitted for SSH.
+- `workspace_id`, `tab_id`, `pane_id`: focus captured from that endpoint's snapshot, when present.
+- `selection`: when visible, the exact `PaneSelectionReadParams` object with `pane_id`,
+  `anchor: {row, col}`, `cursor: {row, col}` and `content_revision`. Helpers can pass
+  it unchanged to `pane.selection.read`; it is coordinates, not selected text.
+
+Treat context values as data, never as shell source. Unavailable endpoints,
+stale/foreign snapshots or selections, and changed targets before launch are
+rejected visibly. Launch failures do not disconnect the endpoint.
+
+Only the local configuration can authorize execution. A server keybinding
+profile cannot supply client commands, even with `--remote-keybindings server`.
+Client commands are never advertised by or invoked on servers. Existing 0.9.1
+servers need no protocol update and ignore the new optional config table
+(possibly with an unknown-key warning). Reload the client's config after edits.
+
 ## Theme
 
 Choose a built-in theme:

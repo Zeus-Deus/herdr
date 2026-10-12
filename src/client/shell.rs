@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 mod actions;
+mod client_commands;
+pub(crate) use client_commands::{spawn_client_command, ClientCommandInvocation};
 mod agent_sidebar;
 mod aggregate_navigation;
 mod workspace_navigation;

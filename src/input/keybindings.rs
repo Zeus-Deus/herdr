@@ -14,6 +14,7 @@ pub(crate) enum KeybindDispatch {
 pub(crate) enum KeybindMatch {
     Action(KeybindAction),
     Command(CustomCommandKeybind),
+    ClientCommand(crate::config::ClientCommandKeybind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +176,21 @@ pub(crate) fn resolve_custom_command(
         .cloned()
 }
 
+pub(crate) fn resolve_client_command(
+    keybinds: &Keybinds,
+    key: &TerminalKey,
+    dispatch: KeybindDispatch,
+) -> Option<crate::config::ClientCommandKeybind> {
+    keybinds
+        .client_commands
+        .iter()
+        .find(|binding| match dispatch {
+            KeybindDispatch::Direct => binding.bindings.matches_direct_key(key),
+            KeybindDispatch::Prefix => binding.bindings.matches_prefix_key(key),
+        })
+        .cloned()
+}
+
 pub(crate) fn resolve_indexed_action(
     keybinds: &Keybinds,
     key: &TerminalKey,
@@ -225,6 +241,9 @@ fn resolve_exact_binding(
 ) -> Option<KeybindMatch> {
     resolve_non_indexed_action(keybinds, key, dispatch)
         .map(KeybindMatch::Action)
+        .or_else(|| {
+            resolve_client_command(keybinds, key, dispatch).map(KeybindMatch::ClientCommand)
+        })
         .or_else(|| resolve_custom_command(keybinds, key, dispatch).map(KeybindMatch::Command))
         .or_else(|| resolve_indexed_action(keybinds, key, dispatch).map(KeybindMatch::Action))
 }

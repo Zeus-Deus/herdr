@@ -213,6 +213,25 @@ pub(crate) fn keybind_help_groups(
                 .collect(),
         ));
     }
+    if !keybinds.client_commands.is_empty() {
+        groups.push((
+            "client-local",
+            keybinds
+                .client_commands
+                .iter()
+                .map(|binding| {
+                    (
+                        binding.label.clone(),
+                        binding
+                            .description
+                            .clone()
+                            .map(Cow::Owned)
+                            .unwrap_or(Cow::Borrowed("client-local command")),
+                    )
+                })
+                .collect(),
+        ));
+    }
     groups
 }
 
@@ -253,6 +272,24 @@ mod tests {
                 vec![entry("v", "split vertical"), entry("x", "close pane")],
             ),
         ]
+    }
+
+    #[test]
+    fn client_command_appears_in_client_keybinding_help() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.client_command]]
+key = "prefix+y"
+command = ["trusted-helper"]
+description = "open local preview"
+"#,
+        )
+        .unwrap();
+        let groups = keybind_help_groups(&config.keybinds(), config.prefix_key());
+        assert!(groups
+            .iter()
+            .flat_map(|(_, entries)| entries)
+            .any(|(key, description)| key == "prefix+y" && description == "open local preview"));
     }
 
     #[test]

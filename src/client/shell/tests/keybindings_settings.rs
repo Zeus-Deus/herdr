@@ -267,6 +267,289 @@ fn prefix_endpoint_action_uses_public_api_with_stable_ids() {
 }
 
 #[test]
+fn client_command_captures_invocation_focus_without_endpoint_rpc() {
+    let local: Config = toml::from_str(
+        r#"
+[[keys.client_command]]
+key = "prefix+y"
+command = ["trusted-helper", "literal $(data)"]
+"#,
+    )
+    .unwrap();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&local));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut frame = surface();
+    frame.panes[0].content_revision = 42;
+    state.set_pane_surface(frame);
+    let mut selection =
+        crate::selection::Selection::absolute_range("pane_1".into(), (2, 3), (4, 5));
+    selection.finish();
+    state.selection = Some(selection);
+    let binding = state.config.keybinds.keybinds.client_commands[0].clone();
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::ClientCommand(binding),
+        &mut outcome,
+    );
+    assert_eq!(
+        outcome.actions.len(),
+        1,
+        "local command should capture a client-owned action"
+    );
+    assert!(outcome.requests.is_empty());
+    let debug = format!("{:?}", outcome.actions);
+    for expected in [
+        "ClientCommand",
+        "trusted-helper",
+        "local",
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        "content_revision",
+        "42",
+    ] {
+        assert!(debug.contains(expected), "missing {expected}: {debug}");
+    }
+    let [ClientShellAction::ClientCommand(invocation)] = &outcome.actions[..] else {
+        panic!("expected client command");
+    };
+    assert_eq!(
+        invocation.context["selection"],
+        serde_json::json!({
+            "pane_id": "pane_1", "anchor": {"row":2,"col":3}, "cursor":{"row":4,"col":5}, "content_revision":42,
+        })
+    );
+    let selection: crate::api::schema::PaneSelectionReadParams =
+        serde_json::from_value(invocation.context["selection"].clone()).unwrap();
+    assert_eq!(selection.content_revision, Some(42));
+    assert_eq!(invocation.context["version"], 1);
+    assert_eq!(
+        invocation.context["server_socket"],
+        crate::api::socket_path().display().to_string()
+    );
+    assert_eq!(invocation.context["session"], "default");
+    assert!(state.pending_requests.is_empty());
+}
+
+#[test]
+fn client_command_saved_ssh_uses_the_committed_endpoint_route() {
+    let local: Config = toml::from_str(
+        r#"
+[[keys.client_command]]
+key = "prefix+y"
+command = ["trusted-local-helper"]
+"#,
+    )
+    .unwrap();
+    let profile = crate::client::endpoint::SavedSshEndpoint {
+        id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&local));
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    assert!(state.activate_endpoint_projection(&endpoint_id));
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::ClientCommand(
+            state.config.keybinds.keybinds.client_commands[0].clone(),
+        ),
+        &mut outcome,
+    );
+    let [ClientShellAction::ClientCommand(invocation)] = &outcome.actions[..] else {
+        panic!("expected local action");
+    };
+    assert_eq!(
+        invocation.context,
+        serde_json::json!({
+            "version": 1, "endpoint_id": endpoint_id.storage_key(),
+            "machine_id": "0123456789abcdef0123456789abcdef", "ssh_target": "dev@build.example", "session": "agents",
+            "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_1",
+        })
+    );
+    assert_eq!(invocation.command, ["trusted-local-helper"]);
+}
+
+#[test]
+pub(super) fn client_command_direct_remote_route_is_captured_from_the_local_launcher() {
+    if super::client_commands::isolated_client_command_test(
+        "client::shell::tests::keybindings_settings::client_command_direct_remote_route_is_captured_from_the_local_launcher",
+        &[
+            ("HERDR_CLIENT_REMOTE_TARGET", "direct@host"),
+            ("HERDR_CLIENT_REMOTE_SESSION", "direct-session"),
+            ("HERDR_REMOTE_KEYBINDINGS", "local"),
+            ("HERDR_CLIENT_SOCKET_PATH", "/synthetic/direct-bridge.sock"),
+        ],
+    ) {
+        return;
+    }
+    let local: Config = toml::from_str(
+        r#"
+[[keys.client_command]]
+key = "prefix+y"
+command = ["trusted-local-helper"]
+"#,
+    )
+    .unwrap();
+    let config = ClientShellConfig::from_config(&local)
+        .with_local_endpoint(&crate::server::socket_paths::client_socket_path());
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::ClientCommand(
+            state.config.keybinds.keybinds.client_commands[0].clone(),
+        ),
+        &mut outcome,
+    );
+    let [ClientShellAction::ClientCommand(invocation)] = &outcome.actions[..] else {
+        panic!("expected local action");
+    };
+    assert_eq!(invocation.context["ssh_target"], "direct@host");
+    assert_eq!(invocation.context["session"], "direct-session");
+    assert_eq!(invocation.context["endpoint_id"], "local");
+    assert!(invocation.context.get("machine_id").is_none());
+    assert!(invocation.context.get("server_socket").is_none());
+}
+
+#[test]
+fn client_command_capture_rejects_unavailable_stale_or_foreign_context() {
+    let local: Config = toml::from_str(
+        r#"
+[[keys.client_command]]
+key = "prefix+y"
+command = ["trusted-local-helper"]
+"#,
+    )
+    .unwrap();
+    for corruption in [
+        "offline",
+        "stale_snapshot",
+        "foreign_focus",
+        "foreign_selection",
+        "foreign_surface",
+        "stale_surface",
+        "foreign_generation",
+        "untrusted_command",
+    ] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&local));
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        let mut selection =
+            crate::selection::Selection::absolute_range("pane_1".into(), (0, 0), (0, 1));
+        selection.finish();
+        state.selection = Some(selection);
+        let mut binding = state.config.keybinds.keybinds.client_commands[0].clone();
+        match corruption {
+            "offline" => state
+                .set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting),
+            "stale_snapshot" => state.snapshot.as_mut().unwrap().revision += 1,
+            "foreign_focus" => {
+                state.snapshot.as_mut().unwrap().focused_pane_id = Some("foreign".into())
+            }
+            "foreign_selection" => state.selection.as_mut().unwrap().pane_id = "foreign".into(),
+            "foreign_surface" => state.pane_surface.as_mut().unwrap().boot_id = "foreign".into(),
+            "stale_surface" => state.pane_surface.as_mut().unwrap().projection_revision += 1,
+            "foreign_generation" => state.pane_surface_generation = Some(99),
+            "untrusted_command" => binding.command = vec!["untrusted".into()],
+            _ => unreachable!(),
+        }
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::ClientCommand(binding),
+            &mut outcome,
+        );
+        assert!(outcome.actions.is_empty(), "must reject {corruption}");
+        assert!(outcome.repaint, "must surface rejection for {corruption}");
+    }
+}
+
+#[test]
+fn client_command_local_reload_stays_authoritative_in_server_keybinding_mode() {
+    let mut local = Config::default();
+    local
+        .keys
+        .client_command
+        .push(crate::config::ClientCommandKeybindConfig {
+            key: crate::config::BindingConfig::one("prefix+y"),
+            command: vec!["original".into()],
+            description: None,
+        });
+    let mut client = ClientShellConfig::from_config(&local)
+        .with_keybinding_source(ClientShellKeybindingSource::Endpoint);
+    client
+        .apply_snapshot_keybindings(Some("[keys]\nprefix = 'ctrl+x'"), &[])
+        .unwrap();
+    local.keys.client_command[0].command = vec!["replacement".into()];
+    client.apply_live_config(&local, &[], &[]);
+    client
+        .apply_snapshot_keybindings(Some("[keys]\nprefix = 'ctrl+x'"), &[])
+        .unwrap();
+    assert_eq!(
+        client.keybinds.keybinds.client_commands[0].command,
+        ["replacement"]
+    );
+    assert_eq!(client.keybinds.prefix.0, KeyCode::Char('x'));
+    local.keys.client_command.clear();
+    client.apply_live_config(&local, &[], &[]);
+    client
+        .apply_snapshot_keybindings(Some("[keys]\nprefix = 'ctrl+x'"), &[])
+        .unwrap();
+    assert!(client.keybinds.keybinds.client_commands.is_empty());
+}
+
+#[test]
+fn client_command_remote_profiles_cannot_supply_local_argv() {
+    let local: Config = toml::from_str(
+        r#"
+[[keys.client_command]]
+key = "prefix+y"
+command = ["trusted-local", "original"]
+"#,
+    )
+    .unwrap();
+    let remote = r#"
+[keys]
+prefix = "ctrl+x"
+[[keys.client_command]]
+key = "prefix+o"
+command = ["untrusted-remote", "must-not-run"]
+"#;
+    for source in [
+        ClientShellKeybindingSource::Local,
+        ClientShellKeybindingSource::RemoteLocal,
+        ClientShellKeybindingSource::Endpoint,
+    ] {
+        let mut client = ClientShellConfig::from_config(&local).with_keybinding_source(source);
+        client
+            .apply_snapshot_keybindings(Some(remote), &[])
+            .unwrap();
+        assert_eq!(client.keybinds.keybinds.client_commands.len(), 1);
+        assert_eq!(
+            client.keybinds.keybinds.client_commands[0].command,
+            ["trusted-local", "original"]
+        );
+        assert_eq!(
+            client.keybinds.keybinds.client_commands[0].label,
+            "prefix+y"
+        );
+    }
+    let mut client = ClientShellConfig::from_config(&Config::default())
+        .with_keybinding_source(ClientShellKeybindingSource::Endpoint);
+    client
+        .apply_snapshot_keybindings(Some(remote), &[])
+        .unwrap();
+    assert!(client.keybinds.keybinds.client_commands.is_empty());
+}
+
+#[test]
 fn remote_keybinding_sources_keep_local_commands_off_endpoints_and_apply_server_profiles() {
     let local: Config = toml::from_str(
         r#"
