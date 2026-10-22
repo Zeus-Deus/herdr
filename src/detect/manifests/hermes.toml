@@ -1,7 +1,7 @@
 id = "hermes"
-version = "2026.07.24.1"
+version = "2026.10.22.1"
 min_engine_version = 2
-updated_at = "2026-07-24T19:12:54Z"
+updated_at = "2026-10-22T00:00:00Z"
 aliases = ["hermes-agent"]
 
 [[rules]]
@@ -92,6 +92,29 @@ priority = 500
 region = "bottom_non_empty_lines(5)"
 visible_working = true
 contains = ["ctrl+c cancel"]
+
+# Hermes's default glyph layout (display.cli_layout = modern) has no spinner
+# hint. While a turn runs, the status line under the composer ends with the
+# key hints "enter interrupt · tab queue · ctrl+c stop"; idle it shows
+# "/ commands · @ files · ! shell". Hermes drops the hints on narrow panes, so
+# the rule above the composer, which carries a braille spinner frame only while
+# busy ("── ⠹ Running tests · 14s ───"), is the second signal. Both sit below
+# the blocked prompts so an approval or clarify dialog still wins.
+[[rules]]
+id = "modern_status_line_working"
+state = "working"
+priority = 880
+region = "bottom_non_empty_lines(3)"
+visible_working = true
+line_regex = ['ctrl\+c stop\s*$']
+
+[[rules]]
+id = "modern_composer_rule_working"
+state = "working"
+priority = 870
+region = "bottom_non_empty_lines(24)"
+visible_working = true
+line_regex = ['^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ']
 
 [[rules]]
 id = "osc_title_idle"
